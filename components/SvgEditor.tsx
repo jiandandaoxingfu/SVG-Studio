@@ -24,6 +24,9 @@ export const SvgEditor: React.FC<SvgEditorProps> = ({ initialContent, onUpload }
   const svgRef = useRef<SVGSVGElement | null>(null);
   const layerPanelRef = useRef<HTMLDivElement>(null);
   
+  // Canvas Size State
+  const [canvasSize, setCanvasSize] = useState<{ width: number; height: number }>({ width: 800, height: 600 });
+
   // SVG View Configuration (to sync overlay with content)
   const [svgConfig, setSvgConfig] = useState<{ viewBox: string; preserveAspectRatio: string }>({ 
     viewBox: '0 0 800 600', 
@@ -55,7 +58,7 @@ export const SvgEditor: React.FC<SvgEditorProps> = ({ initialContent, onUpload }
 
   // Interaction State
   const interactionRef = useRef<{
-    mode: 'idle' | 'dragging' | 'rotating' | 'scaling-tl' | 'scaling-tr' | 'scaling-bl' | 'scaling-br' | 'box-selecting';
+    mode: 'idle' | 'dragging' | 'rotating' | 'scaling-tl' | 'scaling-tr' | 'scaling-bl' | 'scaling-br' | 'box-selecting' | 'canvas-resizing-r' | 'canvas-resizing-b' | 'canvas-resizing-br';
     startPoint: DOMPoint;
     initialGlobalTransforms: Map<string, DOMMatrix>; // Element -> Root Space Matrix
     parentInverseTransforms: Map<string, DOMMatrix>; // Parent -> Root Space Inverse (to get back to local)
@@ -64,6 +67,8 @@ export const SvgEditor: React.FC<SvgEditorProps> = ({ initialContent, onUpload }
     startAngle: number; // For rotation
     startDist: number; // For scaling (legacy/fallback)
     hasMoved: boolean; // Track if actual movement occurred
+    startCanvasSize: { width: number, height: number }; // For canvas resizing
+    startViewBox: { x: number, y: number, w: number, h: number }; // For aspect-ratio correct cropping
   }>({
     mode: 'idle',
     startPoint: new DOMPoint(),
@@ -74,6 +79,8 @@ export const SvgEditor: React.FC<SvgEditorProps> = ({ initialContent, onUpload }
     startAngle: 0,
     startDist: 0,
     hasMoved: false,
+    startCanvasSize: { width: 0, height: 0 },
+    startViewBox: { x: 0, y: 0, w: 0, h: 0 }
   });
 
   // Helper to save history
@@ -194,21 +201,31 @@ export const SvgEditor: React.FC<SvgEditorProps> = ({ initialContent, onUpload }
         svgRef.current = svg;
         
         // 2. Normalize SVG Dimensions / ViewBox
-        const w = svg.getAttribute('width');
-        const h = svg.getAttribute('height');
+        let width = 800;
+        let height = 600;
+        const currentW = svg.getAttribute('width');
+        const currentH = svg.getAttribute('height');
         
+        // Try to parse existing dimensions
+        if (currentW && !currentW.includes('%')) width = parseFloat(currentW) || 800;
+        if (currentH && !currentH.includes('%')) height = parseFloat(currentH) || 600;
+
+        setCanvasSize({ width, height });
+
         // Force SVG to fill container for display
         svg.style.width = '100%';
         svg.style.height = '100%';
         svg.style.overflow = 'visible';
         svg.style.display = 'block';
 
-        // Auto-fit Logic
+        // Ensure width/height attributes are set on the SVG so they exist for export
+        svg.setAttribute('width', String(width));
+        svg.setAttribute('height', String(height));
+
+        // Auto-fit Logic for ViewBox
         requestAnimationFrame(() => {
             if (!svgRef.current) return;
             
-            const currentW = svg.getAttribute('width');
-            const currentH = svg.getAttribute('height');
             let currentVb = svg.getAttribute('viewBox');
 
             if (!currentVb) {
@@ -278,7 +295,17 @@ export const SvgEditor: React.FC<SvgEditorProps> = ({ initialContent, onUpload }
       if (containerRef.current) {
         containerRef.current.innerHTML = history[newIndex];
         const svg = containerRef.current.querySelector('svg');
-        if (svg) svgRef.current = svg;
+        if (svg) {
+            svgRef.current = svg;
+            // Update canvas size from history content
+            const w = parseFloat(svg.getAttribute('width') || '800');
+            const h = parseFloat(svg.getAttribute('height') || '600');
+            setCanvasSize({ width: w, height: h });
+            
+            // Sync internal state with history
+            const vb = svg.getAttribute('viewBox') || '0 0 800 600';
+            setSvgConfig(prev => ({...prev, viewBox: vb}));
+        }
         setSelectedIds([]); 
         setSelectionAnchorId(null);
         setBbox(null);
@@ -295,7 +322,17 @@ export const SvgEditor: React.FC<SvgEditorProps> = ({ initialContent, onUpload }
       if (containerRef.current) {
         containerRef.current.innerHTML = history[newIndex];
         const svg = containerRef.current.querySelector('svg');
-        if (svg) svgRef.current = svg;
+        if (svg) {
+            svgRef.current = svg;
+            // Update canvas size from history content
+            const w = parseFloat(svg.getAttribute('width') || '800');
+            const h = parseFloat(svg.getAttribute('height') || '600');
+            setCanvasSize({ width: w, height: h });
+            
+            // Sync internal state with history
+            const vb = svg.getAttribute('viewBox') || '0 0 800 600';
+            setSvgConfig(prev => ({...prev, viewBox: vb}));
+        }
         setSelectedIds([]);
         setSelectionAnchorId(null);
         setBbox(null);
@@ -435,7 +472,9 @@ export const SvgEditor: React.FC<SvgEditorProps> = ({ initialContent, onUpload }
          startBbox: { x: 0, y: 0, width: 0, height: 0 },
          startAngle: 0,
          startDist: 0,
-         hasMoved: false
+         hasMoved: false,
+         startCanvasSize: { width: 0, height: 0 },
+         startViewBox: { x: 0, y: 0, w: 0, h: 0 }
        };
        return;
     }
@@ -506,7 +545,9 @@ export const SvgEditor: React.FC<SvgEditorProps> = ({ initialContent, onUpload }
       startBbox,
       startAngle,
       startDist,
-      hasMoved: false
+      hasMoved: false,
+      startCanvasSize: { width: 0, height: 0 },
+      startViewBox: { x: 0, y: 0, w: 0, h: 0 }
     };
   };
 
@@ -544,12 +585,49 @@ export const SvgEditor: React.FC<SvgEditorProps> = ({ initialContent, onUpload }
 
   // ---- Mouse Handlers (Attached to Container) ----
 
+  // Canvas Resize Handlers
+  const handleCanvasResizeStart = (
+    direction: 'canvas-resizing-r' | 'canvas-resizing-b' | 'canvas-resizing-br',
+    e: React.MouseEvent
+  ) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!svgRef.current) return;
+
+      const startPoint = new DOMPoint(e.clientX, e.clientY);
+      
+      // Parse current ViewBox for cropping logic
+      let currentVb = svgRef.current.getAttribute('viewBox') || `0 0 ${canvasSize.width} ${canvasSize.height}`;
+      const parts = currentVb.split(' ').map(parseFloat);
+      const startViewBox = { 
+          x: parts[0] || 0, 
+          y: parts[1] || 0, 
+          w: parts[2] || canvasSize.width, 
+          h: parts[3] || canvasSize.height 
+      };
+
+      interactionRef.current = {
+          mode: direction,
+          startPoint,
+          initialGlobalTransforms: new Map(),
+          parentInverseTransforms: new Map(),
+          center: { x: 0, y: 0 },
+          startBbox: { x: 0, y: 0, width: 0, height: 0 },
+          startAngle: 0,
+          startDist: 0,
+          hasMoved: false,
+          startCanvasSize: { ...canvasSize },
+          startViewBox
+      };
+  };
+
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
     if (!svgRef.current) return;
 
     const target = e.target as Element;
     
+    // Ignore clicks on gizmo or resize handles which have their own handlers
     if (target.closest('.gizmo-overlay')) {
       return; 
     }
@@ -692,14 +770,66 @@ export const SvgEditor: React.FC<SvgEditorProps> = ({ initialContent, onUpload }
 
   const handleGlobalMouseMove = useCallback((e: MouseEvent) => {
     const state = interactionRef.current;
-    if (state.mode === 'idle' || !svgRef.current) return;
+    if (state.mode === 'idle') return;
 
     e.preventDefault();
+    state.hasMoved = true;
+
+    // Canvas Resizing Logic
+    if (state.mode.startsWith('canvas-resizing')) {
+        const dx = e.clientX - state.startPoint.x;
+        const dy = e.clientY - state.startPoint.y;
+        const newWidth = Math.max(100, state.startCanvasSize.width + dx);
+        const newHeight = Math.max(100, state.startCanvasSize.height + dy);
+
+        if (state.mode === 'canvas-resizing-r') {
+            setCanvasSize(prev => ({ ...prev, width: newWidth }));
+        } else if (state.mode === 'canvas-resizing-b') {
+            setCanvasSize(prev => ({ ...prev, height: newHeight }));
+        } else if (state.mode === 'canvas-resizing-br') {
+            setCanvasSize({ width: newWidth, height: newHeight });
+        }
+        
+        // Update SVG attributes in real-time
+        if (svgRef.current) {
+            let updateW = canvasSize.width;
+            let updateH = canvasSize.height;
+
+            if (state.mode.includes('r')) {
+               svgRef.current.setAttribute('width', String(newWidth));
+               updateW = newWidth;
+            }
+            if (state.mode.includes('b')) {
+               svgRef.current.setAttribute('height', String(newHeight));
+               updateH = newHeight;
+            }
+            
+            // CROP LOGIC: Update ViewBox dimensions to match the new pixel dimensions.
+            // This prevents "scaling" (shrinking/growing) of content.
+            // We maintain the original origin (x, y) but update width (w) and height (h)
+            // to match the container, effectively "opening/closing" the window into the SVG.
+            
+            // Scale Calculation (in case original viewBox wasn't 1:1 with pixels)
+            const ratioX = state.startViewBox.w / state.startCanvasSize.width;
+            const ratioY = state.startViewBox.h / state.startCanvasSize.height;
+
+            // If we are resizing width, new viewbox width should scale accordingly
+            const newVbW = state.mode.includes('r') ? state.startViewBox.w + (dx * ratioX) : state.startViewBox.w;
+            const newVbH = state.mode.includes('b') ? state.startViewBox.h + (dy * ratioY) : state.startViewBox.h;
+
+            const newViewBox = `${state.startViewBox.x} ${state.startViewBox.y} ${newVbW} ${newVbH}`;
+            
+            svgRef.current.setAttribute('viewBox', newViewBox);
+            setSvgConfig(prev => ({...prev, viewBox: newViewBox}));
+        }
+        return;
+    }
+
+    if (!svgRef.current) return;
     const svg = svgRef.current;
     const currentPt = getSVGPoint(svg, e.clientX, e.clientY);
     const { startPoint, initialGlobalTransforms, parentInverseTransforms, center, startBbox } = state;
 
-    state.hasMoved = true;
 
     if (state.mode === 'box-selecting') {
         const x = Math.min(startPoint.x, currentPt.x);
@@ -796,7 +926,7 @@ export const SvgEditor: React.FC<SvgEditorProps> = ({ initialContent, onUpload }
     });
 
     updateGizmo();
-  }, [updateGizmo]);
+  }, [updateGizmo, canvasSize]); // Depend on canvasSize for resize updates
 
   const handleGlobalMouseUp = useCallback(() => {
     const state = interactionRef.current;
@@ -840,6 +970,9 @@ export const SvgEditor: React.FC<SvgEditorProps> = ({ initialContent, onUpload }
         setSelectedIds(prev => Array.from(new Set([...prev, ...newSelection])));
         setSelectionRect(null);
     } 
+    else if (state.mode.startsWith('canvas-resizing') && state.hasMoved) {
+        saveToHistory();
+    }
     else if (state.mode !== 'idle' && state.mode !== 'box-selecting' && state.hasMoved) {
       saveToHistory();
       // Update tree to refresh previews after drag/scale/rotate
@@ -1219,8 +1352,8 @@ export const SvgEditor: React.FC<SvgEditorProps> = ({ initialContent, onUpload }
           {/* Canvas Area */}
           <div className="flex-1 overflow-hidden relative flex items-center justify-center bg-slate-100/50 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')]">
               <div 
-                className="relative shadow-xl border border-slate-200 bg-white" 
-                style={{ width: '800px', height: '600px' }}
+                className="relative shadow-xl border border-slate-200 bg-white group/canvas" 
+                style={{ width: `${canvasSize.width}px`, height: `${canvasSize.height}px` }}
                 onMouseDown={handleMouseDown}
                 onMouseMove={handleCanvasMouseMove}
                 onMouseLeave={handleCanvasMouseLeave}
@@ -1277,6 +1410,29 @@ export const SvgEditor: React.FC<SvgEditorProps> = ({ initialContent, onUpload }
                       </g>
                    )}
                 </svg>
+
+                {/* Canvas Resize Handles */}
+                <div 
+                  className="absolute top-0 bottom-0 -right-2 w-4 cursor-e-resize z-20 hover:bg-blue-200/50 transition-colors opacity-0 hover:opacity-100"
+                  onMouseDown={(e) => handleCanvasResizeStart('canvas-resizing-r', e)}
+                />
+                <div 
+                  className="absolute left-0 right-0 -bottom-2 h-4 cursor-s-resize z-20 hover:bg-blue-200/50 transition-colors opacity-0 hover:opacity-100"
+                  onMouseDown={(e) => handleCanvasResizeStart('canvas-resizing-b', e)}
+                />
+                <div 
+                  className="absolute -right-2 -bottom-2 w-5 h-5 cursor-se-resize z-30 bg-white border border-slate-300 rounded shadow-sm hover:bg-blue-500 transition-colors flex items-center justify-center group/resizer"
+                  onMouseDown={(e) => handleCanvasResizeStart('canvas-resizing-br', e)}
+                >
+                    <div className="w-1.5 h-1.5 bg-slate-400 rounded-full group-hover/resizer:bg-white" />
+                </div>
+                
+                {/* Size Label during resize */}
+                {interactionRef.current.mode.startsWith('canvas-resizing') && (
+                    <div className="absolute -bottom-10 right-0 bg-slate-800 text-white text-xs px-2 py-1 rounded shadow pointer-events-none">
+                        {Math.round(canvasSize.width)} x {Math.round(canvasSize.height)}
+                    </div>
+                )}
               </div>
 
               {/* Help Overlay */}
@@ -1284,7 +1440,7 @@ export const SvgEditor: React.FC<SvgEditorProps> = ({ initialContent, onUpload }
                 <p>• <strong>Click</strong> to select, <strong>Drag</strong> background to box-select.</p>
                 <p>• <strong>Shift+Click</strong> in list for range selection.</p>
                 <p>• <strong>Arrow Keys</strong> to move items (Shift for 10x).</p>
-                <p>• <strong>Click Layer Panel + Up/Down</strong> to change selection.</p>
+                <p>• <strong>Drag Edges</strong> of canvas to resize it.</p>
                 <p>• <strong>Delete</strong> to remove. <strong>Ctrl+Z</strong> to Undo.</p>
               </div>
           </div>
