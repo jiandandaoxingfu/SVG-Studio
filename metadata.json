@@ -1,0 +1,5 @@
+{
+  "name": "SVG Studio",
+  "description": "A professional SVG editor allowing you to upload, drag, scale, and rotate SVG elements directly in the browser.",
+  "requestFramePermissions": []
+}
